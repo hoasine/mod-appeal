@@ -9,7 +9,7 @@
 | **Pin the policy. Stake both sides. Appeal once. AI cannot raise the penalty.** |
 
 [![Live App](https://img.shields.io/badge/Live-mod--appeal.vercel.app-0f172a?style=for-the-badge&logo=vercel)](https://mod-appeal.vercel.app)
-[![Contract](https://img.shields.io/badge/Contract-0x122F9CA6…5a8E-1f6feb?style=for-the-badge)](#deployment)
+[![Contract](https://img.shields.io/badge/Contract-0xbb582Ac8…8f40-1f6feb?style=for-the-badge)](#deployment)
 [![Frontend](https://img.shields.io/badge/Frontend-Next.js_+_TypeScript-111827?style=for-the-badge)](#project-structure)
 [![Network](https://img.shields.io/badge/Network-GenLayer_Studionet-16a34a?style=for-the-badge)](#environment-variables)
 
@@ -24,23 +24,25 @@
 | Live app | https://mod-appeal.vercel.app |
 | GitHub | https://github.com/hoasine/mod-appeal |
 | Network | GenLayer Studionet (`chainId` `61999`) |
-| Contract | `0x122F9CA63120e2110DcC6991422c50a2424C5a8E` |
+| Contract | `0xbb582Ac88eba689865C0261992139917F6558f40` |
 | Source | `contracts/mod_appeal.py` |
 
 ## Overview
 
-ModAppeal is a voluntary, public arbitration protocol for community moderation. An admin pins a policy. Users opt in. An authorized moderator publishes a case with a fixed GEN stake. The named user can appeal once. GenLayer AI may uphold, reduce, revoke, or return an inconclusive result — **never increase the original penalty**.
+ModAppeal is a voluntary, public arbitration protocol for community moderation. An admin pins a policy. Users opt in. The community signing key seals a one-shot record. An authorized moderator can then publish that record with a fixed GEN stake. The named user can appeal once. GenLayer AI may uphold, reduce, revoke, or return an inconclusive result — **never increase the original penalty**.
 
-The protocol is designed to reduce moderation risk with a strict opt-in then stake flow:
+The protocol is designed to reduce moderation risk with a strict opt-in, seal, then stake flow:
 
 1. `accept_community_policy` records consent for the **current** policy version (**no case can be published without it**)
-2. `publish_case` locks facts, policy snapshot, and exactly **0.01 GEN** only after that opt-in
+2. `seal_moderation_record` is a one-shot wallet transaction from the community **signing key** (defaults to the admin). It binds target, penalty level, and case text. There is no file upload.
+3. `publish_case` locks that sealed record, the policy snapshot, and exactly **0.01 GEN** only after opt-in. Case text must match the seal hash; a record cannot be reused.
 
-This means a moderator cannot write cases against users who never consented, and a later policy update cannot rewrite the snapshot on an already-published case.
+This means a moderator cannot write cases against users who never consented, cannot stake unsigned case text, and a later policy update cannot rewrite the snapshot on an already-published case.
 
 ## Core Value Proposition
 
 - **Opt-in first:** no case until the target accepts the current policy
+- **Community-sealed record:** the signing key must confirm the case text on-chain before stake
 - **Pinned policy:** existing cases keep their snapshot when policy is updated
 - **Fixed stake both sides:** 0.01 GEN, exact match only — no unaffordable appeal bond
 - **One-shot appeals:** the named user may appeal once; requested level must be strictly lower
@@ -50,14 +52,15 @@ This means a moderator cannot write cases against users who never consented, and
 
 ## Protocol Flow
 
-1. **Admin creates a community** (`create_community`) and optionally authorizes moderators
+1. **Admin creates a community** (`create_community`) and optionally authorizes moderators. The admin wallet is the default signing key.
 2. **User accepts the current policy** (`accept_community_policy`)
-3. **Moderator publishes a case** (`publish_case`) with facts, alleged violation, penalty level, and the protocol stake
-4. **Named user may appeal once** (`file_appeal`) with matching stake and a lower requested level
-5. **Original moderator may respond once** (`respond_to_appeal`) during the response window
-6. **Anyone may judge** (`judge_appeal`) after a response or response-window expiry
-7. **If nobody judges in time**, anyone calls `expire_appeal` and both stakes return
-8. **Without an appeal**, anyone may `close_case` after the appeal window; payout stays bound to the original moderator
+3. **Signing key seals a record** (`seal_moderation_record`) — a MetaMask write, not a file
+4. **Moderator publishes a case** (`publish_case`) against that unused record with matching text and the protocol stake
+5. **Named user may appeal once** (`file_appeal`) with matching stake and a lower requested level
+6. **Original moderator may respond once** (`respond_to_appeal`) during the response window
+7. **Anyone may judge** (`judge_appeal`) after a response or response-window expiry
+8. **If nobody judges in time**, anyone calls `expire_appeal` and both stakes return
+9. **Without an appeal**, anyone may `close_case` after the appeal window; payout stays bound to the original moderator
 
 ## Penalty levels
 
@@ -89,6 +92,8 @@ AI confidence below 50, an invalid verdict/level pair, or any attempted penalty 
 | Risk | Mitigation in ModAppeal |
 |------|-------------------------|
 | Case against a user who never opted in | `publish_case` requires current-policy membership |
+| Unauthenticated case text from either party | Community signing key must seal the record; publish requires an unused matching hash |
+| Edited text after the seal | Content hash mismatch blocks `publish_case` |
 | Policy bait-and-switch after a case | Case stores a policy snapshot; updates only affect future cases |
 | Unaffordable appeal bond | Stake is the protocol minimum, exact match only |
 | Penalty raised as retaliation | No increase path; invalid levels become `INCONCLUSIVE` |
@@ -108,9 +113,11 @@ AI confidence below 50, an invalid verdict/level pair, or any attempted penalty 
 | `set_moderator` | write | Admin authorizes or revokes a moderator |
 | `update_policy` | write | New version for future cases; prior consent is invalidated |
 | `set_community_active` | write | Pause or resume new cases |
+| `set_signing_key` | write | Admin sets which wallet can seal records |
+| `seal_moderation_record` | write | Signing key seals a one-shot community record |
 | `accept_community_policy` | write | User opts into the current policy version |
 | `leave_community` | write | User leaves; blocks future cases |
-| `publish_case` | write (payable) | Authorized moderator locks facts + 0.01 GEN |
+| `publish_case` | write (payable) | Authorized moderator locks a sealed record + 0.01 GEN |
 | `withdraw_case` | write | Moderator withdraws before an appeal |
 | `file_appeal` | write (payable) | Named user appeals once with matching stake |
 | `respond_to_appeal` | write | Original moderator replies once |
@@ -120,6 +127,7 @@ AI confidence below 50, an invalid verdict/level pair, or any attempted penalty 
 | `close_case` | write | Close after the appeal window with no appeal |
 | `get_communities_page` / `get_cases_page` / `get_appeals_page` | view | Bounded pagination |
 | `get_case` / `get_appeal` / `get_case_appeal` | view | Individual records |
+| `get_record` / `get_records_for_community_page` | view | Sealed community records |
 | `get_membership` / `is_authorized_moderator` | view | Opt-in and moderator checks |
 | `get_protocol_config` / `get_fairness_ledger` / `get_counts` | view | Config, verdict totals, counts |
 
@@ -136,7 +144,7 @@ tests/       # Contract tests
 Configure in `frontend/.env.local` (see `frontend/.env.example`):
 
 ```env
-NEXT_PUBLIC_CONTRACT_ADDRESS=0x122F9CA63120e2110DcC6991422c50a2424C5a8E
+NEXT_PUBLIC_CONTRACT_ADDRESS=0xbb582Ac88eba689865C0261992139917F6558f40
 NEXT_PUBLIC_GENLAYER_RPC_URL=https://studio.genlayer.com/api
 NEXT_PUBLIC_GENLAYER_CHAIN_ID=61999
 NEXT_PUBLIC_GENLAYER_CHAIN_NAME=GenLayer Studionet
@@ -169,7 +177,7 @@ The app runs on port **3008**. Deploy `contracts/mod_appeal.py` in GenLayer Stud
 - Live app: [https://mod-appeal.vercel.app](https://mod-appeal.vercel.app)
 - GitHub: [https://github.com/hoasine/mod-appeal](https://github.com/hoasine/mod-appeal)
 - Local app: [http://localhost:3008](http://localhost:3008)
-- Studionet contract: `0x122F9CA63120e2110DcC6991422c50a2424C5a8E`
+- Studionet contract: `0xbb582Ac88eba689865C0261992139917F6558f40`
 
 ## Disclaimer
 

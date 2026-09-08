@@ -10,8 +10,8 @@ const steps = [
   },
   {
     icon: BookOpen,
-    title: "Publish a case",
-    desc: "An authorized moderator locks facts, policy snapshot, and a 0.01 GEN stake.",
+    title: "Seal, then publish",
+    desc: "The community signing key confirms the case text in a wallet transaction. An authorized moderator then locks 0.01 GEN. No files.",
   },
   {
     icon: Scale,
@@ -45,7 +45,9 @@ export function HowItWorks() {
       </div>
       <p className="mt-6 text-sm text-muted-foreground">
         Rulings are advisory. This contract cannot ban or unban an account on an external platform.
-        Do not submit names, private messages, or other personal data — on-chain text is public.
+        A seal means this community stands behind the text — it does not prove the off-chain event
+        happened. Do not submit names, private messages, or other personal data — on-chain text is
+        public.
       </p>
     </section>
   );

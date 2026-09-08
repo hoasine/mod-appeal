@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { LayoutDashboard, Loader2, PenLine, Scale, Shield, Timer } from "lucide-react";
+import { BookOpen, LayoutDashboard, Loader2, PenLine, Scale, Shield, Timer } from "lucide-react";
 import { ContractSetupBanner } from "@/components/ContractSetupBanner";
 import { RateLimitNotice } from "@/components/RateLimitNotice";
 import { HowItWorks } from "@/components/mod/HowItWorks";
@@ -59,6 +59,7 @@ export function ModApp() {
     const active = cases.filter((c) => !c.closed).length;
     return [
       { label: "Communities", value: counts?.communities ?? communities.length, icon: Shield },
+      { label: "Sealed records", value: counts?.records ?? 0, icon: BookOpen },
       { label: "Cases", value: counts?.cases ?? cases.length, icon: Scale },
       { label: "Active cases", value: active, icon: Timer },
       { label: "Open appeals", value: open, icon: LayoutDashboard },
@@ -96,7 +97,7 @@ export function ModApp() {
 
       {tab === "overview" && (
         <div className="animate-fade-in space-y-8">
-          <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
             {stats.map((item) => (
               <div key={item.label} className="glass-card flex flex-col gap-3 p-5">
                 <item.icon className="h-5 w-5 text-accent" />

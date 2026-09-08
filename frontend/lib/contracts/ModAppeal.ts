@@ -37,6 +37,9 @@ export type CommunityView = {
   policy_version: number;
   revision_count: number;
   active: boolean;
+  signing_key: string;
+  signing_key_version: number;
+  record_count: number;
   created_at: number;
   updated_at: number;
 };
@@ -74,6 +77,9 @@ export type CaseView = {
   final_reasoning: string;
   status: CaseStatus;
   closed: boolean;
+  record_id: number;
+  content_hash: string;
+  sealed: boolean;
 };
 
 export type AppealView = {
@@ -125,8 +131,24 @@ export type ProtocolConfig = {
 export type CountsView = {
   communities: number;
   policy_revisions: number;
+  records: number;
   cases: number;
   appeals: number;
+};
+
+export type SealedRecordView = {
+  id: number;
+  community_id: number;
+  signer: string;
+  target_user: string;
+  penalty_level: number;
+  content_hash: string;
+  title: string;
+  case_facts: string;
+  alleged_violation: string;
+  penalty_details: string;
+  used: boolean;
+  created_at: number;
 };
 
 export type TransactionProgress = {
@@ -244,9 +266,13 @@ export class ModAppealClient {
           `No ModAppeal contract at ${this.contractAddress} on Studionet. Deploy contracts/mod_appeal.py in GenLayer Studio, then set NEXT_PUBLIC_CONTRACT_ADDRESS.`
         );
       }
-      if (!("publish_case" in data.result.methods) || !("accept_community_policy" in data.result.methods)) {
+      if (
+        !("publish_case" in data.result.methods) ||
+        !("accept_community_policy" in data.result.methods) ||
+        !("seal_moderation_record" in data.result.methods)
+      ) {
         throw new Error(
-          `Contract at ${this.contractAddress} is missing ModAppeal methods. Confirm you deployed ModAppeal.`
+          `Contract at ${this.contractAddress} is missing ModAppeal methods. Confirm you deployed the sealed-record ModAppeal.`
         );
       }
     } catch (err) {
@@ -462,6 +488,16 @@ export class ModAppealClient {
     return normalizeReadResult<CountsView>(raw);
   }
 
+  async getRecordsForCommunity(communityId: number): Promise<SealedRecordView[]> {
+    const raw = await this.readClient.readContract({
+      address: this.contractAddress,
+      functionName: "get_records_for_community_page",
+      args: [communityId, 0, 50],
+    });
+    const list = normalizeReadResult<SealedRecordView[]>(raw);
+    return Array.isArray(list) ? list : [];
+  }
+
   createCommunity(name: string, policyText: string, onProgress?: (p: TransactionProgress) => void) {
     return this.write("create_community", [name, policyText], 0n, FAST_TX_WAIT, onProgress);
   }
@@ -510,6 +546,47 @@ export class ModAppealClient {
     );
   }
 
+  setSigningKey(
+    communityId: number,
+    signingKey: string,
+    onProgress?: (p: TransactionProgress) => void
+  ) {
+    return this.write(
+      "set_signing_key",
+      [communityId, signingKey],
+      0n,
+      FAST_TX_WAIT,
+      onProgress
+    );
+  }
+
+  sealModerationRecord(
+    communityId: number,
+    targetUser: string,
+    title: string,
+    caseFacts: string,
+    allegedViolation: string,
+    penaltyLevel: number,
+    penaltyDetails: string,
+    onProgress?: (p: TransactionProgress) => void
+  ) {
+    return this.write(
+      "seal_moderation_record",
+      [
+        communityId,
+        targetUser,
+        title,
+        caseFacts,
+        allegedViolation,
+        penaltyLevel,
+        penaltyDetails,
+      ],
+      0n,
+      FAST_TX_WAIT,
+      onProgress
+    );
+  }
+
   acceptCommunityPolicy(communityId: number, onProgress?: (p: TransactionProgress) => void) {
     return this.write("accept_community_policy", [communityId], 0n, FAST_TX_WAIT, onProgress);
   }
@@ -527,6 +604,7 @@ export class ModAppealClient {
     penaltyLevel: number,
     penaltyDetails: string,
     appealWindowSeconds: number,
+    recordId: number,
     stakeWei: bigint,
     onProgress?: (p: TransactionProgress) => void
   ) {
@@ -541,6 +619,7 @@ export class ModAppealClient {
         penaltyLevel,
         penaltyDetails,
         appealWindowSeconds,
+        recordId,
       ],
       stakeWei,
       FAST_TX_WAIT,

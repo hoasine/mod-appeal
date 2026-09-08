@@ -20,6 +20,7 @@ export function CommunityCard({ community }: { community: CommunityView }) {
   const writes = useModWrites();
   const { data: membership } = useMembership(community.id);
   const [moderator, setModerator] = useState("");
+  const [signingKey, setSigningKey] = useState("");
   const [policy, setPolicy] = useState(community.policy_text);
   const [reason, setReason] = useState("");
   const [progress, setProgress] = useState<TransactionProgress | null>(null);
@@ -31,7 +32,8 @@ export function CommunityCard({ community }: { community: CommunityView }) {
     writes.leave.isPending ||
     writes.setModerator.isPending ||
     writes.updatePolicy.isPending ||
-    writes.setActive.isPending;
+    writes.setActive.isPending ||
+    writes.setSigningKey.isPending;
 
   const run = async (label: string, fn: () => Promise<unknown>) => {
     try {
@@ -51,7 +53,8 @@ export function CommunityCard({ community }: { community: CommunityView }) {
         <div>
           <h3 className="font-display text-xl font-bold">{community.name}</h3>
           <p className="mt-1 text-sm text-muted-foreground">
-            Community #{community.id} · Admin {shortAddr(community.admin)} · policy v
+            Community #{community.id} · Admin {shortAddr(community.admin)} · signing key{" "}
+            {shortAddr(community.signing_key || community.admin)} · policy v
             {community.policy_version}
             {community.active ? "" : " · inactive"}
           </p>
@@ -188,6 +191,34 @@ export function CommunityCard({ community }: { community: CommunityView }) {
               }
             >
               Publish new policy version
+            </Button>
+          </div>
+          <div className="space-y-2 md:col-span-2">
+            <Label>Community signing key</Label>
+            <p className="text-xs text-muted-foreground">
+              Current key {shortAddr(community.signing_key || community.admin)}. Only this wallet
+              can seal a moderation record. Changing it does not unseal existing records.
+            </p>
+            <Input
+              value={signingKey}
+              onChange={(e) => setSigningKey(e.target.value)}
+              placeholder="0x…"
+            />
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={pending || !ADDR_RE.test(signingKey.trim())}
+              onClick={() =>
+                run("Signing key updated", () =>
+                  writes.setSigningKey.mutateAsync([
+                    community.id,
+                    signingKey.trim(),
+                    setProgress,
+                  ])
+                )
+              }
+            >
+              Set signing key
             </Button>
           </div>
         </div>

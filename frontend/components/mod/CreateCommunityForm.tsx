@@ -54,7 +54,9 @@ export function CreateCommunityForm({ onDone }: { onDone?: () => void }) {
           </p>
           <h2 className="font-display text-xl font-bold">Create a community</h2>
           <p className="mt-1.5 text-sm text-muted-foreground">
-            You become admin. Members must accept this policy before a case can be published.
+            You become admin and the default signing key. Members must accept this policy before a
+            case can be published. The signing key must seal each case in a wallet transaction —
+            there is no file upload.
           </p>
         </div>
       </div>

@@ -1,30 +1,43 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Loader2, Scale } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { StakeConfirmDialog } from "@/components/mod/StakeConfirmDialog";
-import { useCommunities, useModWrites, useProtocolConfig } from "@/lib/hooks/useModAppeal";
+import {
+  useCommunities,
+  useModClient,
+  useModWrites,
+  useProtocolConfig,
+  useRecords,
+} from "@/lib/hooks/useModAppeal";
 import { useWallet } from "@/lib/genlayer/WalletProvider";
-import { formatGen } from "@/lib/utils/format";
+import { formatGen, shortAddr } from "@/lib/utils/format";
 import { success, error as toastError } from "@/lib/utils/toast";
 import { friendlyTxError } from "@/components/RateLimitNotice";
-import { PENALTY_LABELS, type TransactionProgress } from "@/lib/contracts/ModAppeal";
+import {
+  PENALTY_LABELS,
+  type SealedRecordView,
+  type TransactionProgress,
+} from "@/lib/contracts/ModAppeal";
 
 const ADDR_RE = /^0x[a-fA-F0-9]{40}$/;
 const MIN_STAKE_WEI = 10_000_000_000_000_000n;
+const NEW_SEAL = "new";
 
 export function PublishCaseForm({ onDone }: { onDone?: () => void }) {
   const { address, isConnected } = useWallet();
+  const client = useModClient();
   const writes = useModWrites();
   const { data: communities = [] } = useCommunities();
   const { data: config } = useProtocolConfig();
   const stakeWei = config ? BigInt(String(config.minimum_stake)) : MIN_STAKE_WEI;
 
   const [communityId, setCommunityId] = useState("0");
+  const [recordChoice, setRecordChoice] = useState(NEW_SEAL);
   const [target, setTarget] = useState("");
   const [title, setTitle] = useState("");
   const [facts, setFacts] = useState("");
@@ -33,7 +46,25 @@ export function PublishCaseForm({ onDone }: { onDone?: () => void }) {
   const [details, setDetails] = useState("");
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [progress, setProgress] = useState<TransactionProgress | null>(null);
-  const pending = writes.publish.isPending;
+  const pending = writes.publish.isPending || writes.seal.isPending;
+
+  const selectedCommunity = communities.find((c) => String(c.id) === communityId) ?? communities[0];
+  const cid = selectedCommunity?.id ?? Number(communityId);
+  const { data: records = [] } = useRecords(Number.isFinite(cid) ? cid : -1);
+  const unusedRecords = useMemo(() => records.filter((r) => !r.used), [records]);
+  const signingKey = selectedCommunity?.signing_key || selectedCommunity?.admin || "";
+  const isSigner = Boolean(address && signingKey && address.toLowerCase() === signingKey.toLowerCase());
+  const usingExisting = recordChoice !== NEW_SEAL;
+  const locked = usingExisting;
+
+  const applyRecord = (record: SealedRecordView) => {
+    setTarget(record.target_user);
+    setTitle(record.title);
+    setFacts(record.case_facts);
+    setViolation(record.alleged_violation);
+    setLevel(String(record.penalty_level));
+    setDetails(record.penalty_details);
+  };
 
   const validate = () => {
     if (!isConnected || !address) throw new Error("Connect your wallet to continue");
@@ -47,15 +78,42 @@ export function PublishCaseForm({ onDone }: { onDone?: () => void }) {
     if (details.trim().length < 5) throw new Error("Penalty details are required");
     const penalty = Number(level);
     if (![1, 2, 3, 4].includes(penalty)) throw new Error("Penalty level must be 1–4");
-    return { penalty, cid: Number(communityId) };
+    if (!usingExisting && !isSigner) {
+      throw new Error("Only the community signing key can seal a new record. Load an unused sealed record, or connect that wallet.");
+    }
+    if (usingExisting) {
+      const recordId = Number(recordChoice);
+      if (!Number.isInteger(recordId) || recordId < 0) {
+        throw new Error("Select an unused sealed record");
+      }
+    }
+    return { penalty, cid: Number(selectedCommunity?.id ?? communityId) };
   };
 
   const submit = async () => {
     try {
-      const { penalty, cid } = validate();
+      const { penalty, cid: publishCid } = validate();
       setProgress({ stage: "preparing" });
+      let recordId: number;
+      if (usingExisting) {
+        recordId = Number(recordChoice);
+      } else {
+        if (!client) throw new Error("Contract not configured");
+        const before = await client.getCounts();
+        await writes.seal.mutateAsync([
+          publishCid,
+          target.trim(),
+          title.trim(),
+          facts.trim(),
+          violation.trim(),
+          penalty,
+          details.trim(),
+          setProgress,
+        ]);
+        recordId = Number(before.records);
+      }
       await writes.publish.mutateAsync([
-        cid,
+        publishCid,
         target.trim(),
         title.trim(),
         facts.trim(),
@@ -63,6 +121,7 @@ export function PublishCaseForm({ onDone }: { onDone?: () => void }) {
         penalty,
         details.trim(),
         0,
+        recordId,
         stakeWei,
         setProgress,
       ]);
@@ -71,6 +130,7 @@ export function PublishCaseForm({ onDone }: { onDone?: () => void }) {
       });
       setProgress(null);
       setConfirmOpen(false);
+      setRecordChoice(NEW_SEAL);
       setTarget("");
       setTitle("");
       setFacts("");
@@ -107,8 +167,9 @@ export function PublishCaseForm({ onDone }: { onDone?: () => void }) {
             </p>
             <h2 className="font-display text-xl font-bold">Publish a case</h2>
             <p className="mt-1.5 text-sm text-muted-foreground">
-              Target must have accepted the current policy. Stake is fixed at{" "}
-              {formatGen(stakeWei)} GEN. Do not include personal data.
+              The community signing key must first seal this text in a wallet transaction. There is
+              no file upload. Stake is fixed at {formatGen(stakeWei)} GEN. Do not include personal
+              data.
             </p>
           </div>
         </div>
@@ -120,7 +181,10 @@ export function PublishCaseForm({ onDone }: { onDone?: () => void }) {
               id="cid"
               className="h-9 w-full rounded-md border bg-background px-3 text-sm"
               value={communityId}
-              onChange={(e) => setCommunityId(e.target.value)}
+              onChange={(e) => {
+                setCommunityId(e.target.value);
+                setRecordChoice(NEW_SEAL);
+              }}
               disabled={!isConnected || pending}
             >
               {communities.length === 0 && <option value="0">0</option>}
@@ -132,16 +196,52 @@ export function PublishCaseForm({ onDone }: { onDone?: () => void }) {
             </select>
           </div>
           <div className="space-y-2">
-            <Label htmlFor="target">Target user</Label>
-            <Input
-              id="target"
-              required
-              value={target}
-              onChange={(e) => setTarget(e.target.value)}
-              placeholder="0x…"
+            <Label htmlFor="record">Sealed community record</Label>
+            <select
+              id="record"
+              className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+              value={recordChoice}
+              onChange={(e) => {
+                const value = e.target.value;
+                setRecordChoice(value);
+                if (value !== NEW_SEAL) {
+                  const record = unusedRecords.find((r) => String(r.id) === value);
+                  if (record) applyRecord(record);
+                }
+              }}
               disabled={!isConnected || pending}
-            />
+            >
+              {isSigner && <option value={NEW_SEAL}>Seal a new record with this wallet</option>}
+              {!isSigner && (
+                <option value={NEW_SEAL} disabled>
+                  {unusedRecords.length === 0 ? "No unused sealed record yet" : "Select an unused sealed record"}
+                </option>
+              )}
+              {unusedRecords.map((r) => (
+                <option key={r.id} value={r.id}>
+                  #{r.id} · {r.title} · {shortAddr(r.target_user)}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-muted-foreground">
+              Signing key {signingKey ? shortAddr(signingKey) : "—"}.
+              {isSigner
+                ? " This wallet can seal, then publish in a second confirmation."
+                : " Connect the signing key, or load a record it already sealed."}
+            </p>
           </div>
+        </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="target">Target user</Label>
+          <Input
+            id="target"
+            required
+            value={target}
+            onChange={(e) => setTarget(e.target.value)}
+            placeholder="0x…"
+            disabled={!isConnected || pending || locked}
+          />
         </div>
 
         <div className="space-y-2">
@@ -152,7 +252,7 @@ export function PublishCaseForm({ onDone }: { onDone?: () => void }) {
             maxLength={200}
             value={title}
             onChange={(e) => setTitle(e.target.value)}
-            disabled={!isConnected || pending}
+            disabled={!isConnected || pending || locked}
           />
         </div>
         <div className="space-y-2">
@@ -163,7 +263,7 @@ export function PublishCaseForm({ onDone }: { onDone?: () => void }) {
             rows={4}
             value={facts}
             onChange={(e) => setFacts(e.target.value.slice(0, 8000))}
-            disabled={!isConnected || pending}
+            disabled={!isConnected || pending || locked}
           />
         </div>
         <div className="space-y-2">
@@ -174,7 +274,7 @@ export function PublishCaseForm({ onDone }: { onDone?: () => void }) {
             rows={3}
             value={violation}
             onChange={(e) => setViolation(e.target.value.slice(0, 3000))}
-            disabled={!isConnected || pending}
+            disabled={!isConnected || pending || locked}
           />
         </div>
         <div className="grid gap-4 sm:grid-cols-2">
@@ -185,7 +285,7 @@ export function PublishCaseForm({ onDone }: { onDone?: () => void }) {
               className="h-9 w-full rounded-md border bg-background px-3 text-sm"
               value={level}
               onChange={(e) => setLevel(e.target.value)}
-              disabled={!isConnected || pending}
+              disabled={!isConnected || pending || locked}
             >
               {[1, 2, 3, 4].map((n) => (
                 <option key={n} value={n}>
@@ -202,14 +302,14 @@ export function PublishCaseForm({ onDone }: { onDone?: () => void }) {
               value={details}
               onChange={(e) => setDetails(e.target.value)}
               placeholder="Seven-day suspension"
-              disabled={!isConnected || pending}
+              disabled={!isConnected || pending || locked}
             />
           </div>
         </div>
 
         <Button type="submit" variant="gradient" className="w-full" disabled={!isConnected || pending}>
           {pending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Scale className="mr-2 h-4 w-4" />}
-          Review stake and publish
+          {usingExisting ? "Review stake and publish" : "Review stake, seal, and publish"}
         </Button>
         {progress && (
           <p className="text-sm text-muted-foreground capitalize">Transaction: {progress.stage}</p>
@@ -219,15 +319,30 @@ export function PublishCaseForm({ onDone }: { onDone?: () => void }) {
       <StakeConfirmDialog
         open={confirmOpen}
         onOpenChange={setConfirmOpen}
-        title="Confirm case publish"
-        description="You are locking the protocol stake behind this case. The target can appeal once. The policy snapshot cannot change for this case."
+        title={usingExisting ? "Confirm case publish" : "Confirm seal and publish"}
+        description={
+          usingExisting
+            ? "You are locking the protocol stake against a community-sealed record. The target can appeal once. The policy snapshot cannot change for this case."
+            : "MetaMask will ask twice: first to seal this text as the community record, then to lock the protocol stake. Editing after the seal will fail."
+        }
         stakeLabel={`${formatGen(stakeWei)} GEN`}
-        warnings={[
-          "Target must have accepted the current policy",
-          "You cannot raise the penalty if they appeal",
-          "If they win, they receive both stakes",
-          "Do not include personal or private data",
-        ]}
+        warnings={
+          usingExisting
+            ? [
+                "Case text must match the sealed record exactly",
+                "Target must have accepted the current policy",
+                "You cannot raise the penalty if they appeal",
+                "If they win, they receive both stakes",
+                "Do not include personal or private data",
+              ]
+            : [
+                "The first confirmation is the community seal — not a file upload",
+                "A seal authenticates that this community stands behind the text",
+                "Target must have accepted the current policy",
+                "You cannot raise the penalty if they appeal",
+                "If they win, they receive both stakes",
+              ]
+        }
         pending={pending}
         onConfirm={submit}
       />

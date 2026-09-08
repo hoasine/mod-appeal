@@ -36,6 +36,7 @@ APPEAL_EVIDENCE = (
 )
 
 _DIRECT_VM = None
+_SEALER = None
 
 
 def _addr_hex(value) -> str:
@@ -86,7 +87,31 @@ def _payable(contract, method: str, *args, value: int):
 
 
 def _create_community(contract):
+    global _SEALER
+    _SEALER = _DIRECT_VM.sender
     contract.create_community("Safe Forum", POLICY)
+
+
+def _target_hex(target) -> str:
+    return target if isinstance(target, str) else _addr_hex(target)
+
+
+def _seal_record(contract, target, *, penalty_level: int = 3) -> int:
+    sealer = _SEALER if _SEALER is not None else _DIRECT_VM.sender
+    publisher = _DIRECT_VM.sender
+    _DIRECT_VM.sender = sealer
+    record_id = int(contract.get_counts()["records"])
+    contract.seal_moderation_record(
+        0,
+        _target_hex(target),
+        "Appeal of forum moderation decision",
+        CASE_FACTS,
+        VIOLATION,
+        penalty_level,
+        DETAILS,
+    )
+    _DIRECT_VM.sender = publisher
+    return record_id
 
 
 def _publish_case(
@@ -100,18 +125,19 @@ def _publish_case(
     _DIRECT_VM.sender = target
     contract.accept_community_policy(0)
     _DIRECT_VM.sender = publisher
-    target_hex = target if isinstance(target, str) else _addr_hex(target)
+    record_id = _seal_record(contract, target, penalty_level=penalty_level)
     _payable(
         contract,
         "publish_case",
         0,
-        target_hex,
+        _target_hex(target),
         "Appeal of forum moderation decision",
         CASE_FACTS,
         VIOLATION,
         penalty_level,
         DETAILS,
         0,
+        record_id,
         value=value,
     )
 
@@ -173,6 +199,8 @@ class TestCommunityAuthorization:
         _create_community(contract)
         community = contract.get_community(0)
         assert community["admin"] == _addr_hex(direct_alice)
+        assert community["signing_key"] == _addr_hex(direct_alice)
+        assert community["record_count"] == 0
         assert community["policy_version"] == 1
         assert community["revision_count"] == 1
         assert community["active"] is True
@@ -221,6 +249,7 @@ class TestCaseSafety:
         self, contract, direct_bob
     ):
         _create_community(contract)
+        record_id = _seal_record(contract, direct_bob)
         with pytest.raises(Exception, match="opted into"):
             _payable(
                 contract,
@@ -233,6 +262,7 @@ class TestCaseSafety:
                 3,
                 DETAILS,
                 0,
+                record_id,
                 value=STAKE,
             )
 
@@ -249,6 +279,7 @@ class TestCaseSafety:
             "Add an impersonation rule for future cases only.",
         )
         with pytest.raises(Exception, match="current policy version"):
+            record_id = _seal_record(contract, direct_bob)
             _payable(
                 contract,
                 "publish_case",
@@ -260,6 +291,7 @@ class TestCaseSafety:
                 3,
                 DETAILS,
                 0,
+                record_id,
                 value=STAKE,
             )
         membership = contract.get_membership(0, _addr_hex(direct_bob))
@@ -267,19 +299,7 @@ class TestCaseSafety:
         direct_vm.sender = direct_bob
         contract.accept_community_policy(0)
         direct_vm.sender = direct_alice
-        _payable(
-            contract,
-            "publish_case",
-            0,
-            _addr_hex(direct_bob),
-            "Appeal of forum moderation decision",
-            CASE_FACTS,
-            VIOLATION,
-            3,
-            DETAILS,
-            0,
-            value=STAKE,
-        )
+        _publish_case(contract, direct_bob)
 
     def test_member_can_leave_and_block_future_cases(
         self, contract, direct_vm, direct_alice, direct_bob
@@ -289,6 +309,7 @@ class TestCaseSafety:
         contract.accept_community_policy(0)
         contract.leave_community(0)
         direct_vm.sender = direct_alice
+        record_id = _seal_record(contract, direct_bob)
         with pytest.raises(Exception, match="opted into"):
             _payable(
                 contract,
@@ -301,6 +322,7 @@ class TestCaseSafety:
                 3,
                 DETAILS,
                 0,
+                record_id,
                 value=STAKE,
             )
 
@@ -326,7 +348,7 @@ class TestCaseSafety:
         self, contract, direct_alice, direct_bob
     ):
         _create_community(contract)
-        with pytest.raises(Exception, match="themselves"):
+        with pytest.raises(Exception, match="themselves|against itself"):
             _publish_case(contract, direct_alice)
         with pytest.raises(Exception, match="exactly equal"):
             _publish_case(contract, direct_bob, value=1)
@@ -646,3 +668,145 @@ class TestEscapeHatches:
         ) == 1
         with pytest.raises(Exception, match="between 1 and 100"):
             contract.get_cases_page(0, 101)
+
+
+class TestSealedCommunityRecords:
+    def test_publish_requires_a_sealed_record(
+        self, contract, direct_bob
+    ):
+        _create_community(contract)
+        _DIRECT_VM.sender = direct_bob
+        contract.accept_community_policy(0)
+        _DIRECT_VM.sender = _SEALER
+        with pytest.raises(Exception, match="Sealed record not found"):
+            _payable(
+                contract,
+                "publish_case",
+                0,
+                _addr_hex(direct_bob),
+                "Appeal of forum moderation decision",
+                CASE_FACTS,
+                VIOLATION,
+                3,
+                DETAILS,
+                0,
+                0,
+                value=STAKE,
+            )
+
+    def test_non_signer_cannot_seal(
+        self, contract, direct_vm, direct_bob, direct_charlie
+    ):
+        _create_community(contract)
+        direct_vm.sender = direct_charlie
+        with pytest.raises(Exception, match="signing key"):
+            contract.seal_moderation_record(
+                0,
+                _addr_hex(direct_bob),
+                "Appeal of forum moderation decision",
+                CASE_FACTS,
+                VIOLATION,
+                3,
+                DETAILS,
+            )
+
+    def test_record_cannot_be_reused_or_edited_after_seal(
+        self, contract, direct_bob
+    ):
+        _create_community(contract)
+        _publish_case(contract, direct_bob)
+        contract.withdraw_case(
+            0, "The first case was withdrawn after correcting the record."
+        )
+        with pytest.raises(Exception, match="already been used"):
+            _payable(
+                contract,
+                "publish_case",
+                0,
+                _addr_hex(direct_bob),
+                "Appeal of forum moderation decision",
+                CASE_FACTS,
+                VIOLATION,
+                3,
+                DETAILS,
+                0,
+                0,
+                value=STAKE,
+            )
+        _publish_case(contract, direct_bob)
+        assert contract.get_case(1)["record_id"] == 1
+        assert contract.get_case(1)["sealed"] is True
+        records = contract.get_records_for_community_page(0, 0, 10)
+        assert records[0]["used"] is True
+        assert records[1]["used"] is True
+
+    def test_tampered_text_does_not_match_sealed_hash(
+        self, contract, direct_bob
+    ):
+        _create_community(contract)
+        _DIRECT_VM.sender = direct_bob
+        contract.accept_community_policy(0)
+        record_id = _seal_record(contract, direct_bob)
+        _DIRECT_VM.sender = _SEALER
+        with pytest.raises(Exception, match="does not match"):
+            _payable(
+                contract,
+                "publish_case",
+                0,
+                _addr_hex(direct_bob),
+                "Appeal of forum moderation decision",
+                CASE_FACTS + " Extra unsealed sentence.",
+                VIOLATION,
+                3,
+                DETAILS,
+                0,
+                record_id,
+                value=STAKE,
+            )
+
+    def test_signing_key_cannot_seal_against_itself(
+        self, contract, direct_alice
+    ):
+        _create_community(contract)
+        with pytest.raises(Exception, match="against itself"):
+            contract.seal_moderation_record(
+                0,
+                _addr_hex(direct_alice),
+                "Appeal of forum moderation decision",
+                CASE_FACTS,
+                VIOLATION,
+                3,
+                DETAILS,
+            )
+
+    def test_admin_can_reassign_signing_key(
+        self, contract, direct_vm, direct_bob, direct_charlie
+    ):
+        _create_community(contract)
+        contract.set_signing_key(0, _addr_hex(direct_charlie))
+        community = contract.get_community(0)
+        assert community["signing_key"] == _addr_hex(direct_charlie)
+        with pytest.raises(Exception, match="signing key"):
+            contract.seal_moderation_record(
+                0,
+                _addr_hex(direct_bob),
+                "Appeal of forum moderation decision",
+                CASE_FACTS,
+                VIOLATION,
+                3,
+                DETAILS,
+            )
+        direct_vm.sender = direct_charlie
+        record_id = int(contract.get_counts()["records"])
+        contract.seal_moderation_record(
+            0,
+            _addr_hex(direct_bob),
+            "Appeal of forum moderation decision",
+            CASE_FACTS,
+            VIOLATION,
+            3,
+            DETAILS,
+        )
+        assert contract.get_record(record_id)["signer"] == _addr_hex(
+            direct_charlie
+        )

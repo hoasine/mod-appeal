@@ -177,6 +177,9 @@ export function CaseCard({ caseItem }: { caseItem: CaseView }) {
           <p className="mt-1 text-sm text-muted-foreground">
             Case #{caseItem.id} · community #{caseItem.community_id} · moderator{" "}
             {shortAddr(caseItem.moderator)} · target {shortAddr(caseItem.target_user)}
+            {caseItem.sealed
+              ? ` · sealed record #${caseItem.record_id}`
+              : ""}
           </p>
         </div>
         <div className="text-right">

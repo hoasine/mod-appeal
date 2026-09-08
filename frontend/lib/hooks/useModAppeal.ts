@@ -28,6 +28,7 @@ function useInvalidate() {
       qc.invalidateQueries({ queryKey: ["mod-auth"] }),
       qc.invalidateQueries({ queryKey: ["mod-ledger"] }),
       qc.invalidateQueries({ queryKey: ["mod-counts"] }),
+      qc.invalidateQueries({ queryKey: ["mod-records"] }),
     ]);
 }
 
@@ -137,12 +138,23 @@ export function useCounts() {
   });
 }
 
+export function useRecords(communityId: number) {
+  const client = useModClient();
+  return useQuery({
+    queryKey: ["mod-records", getContractAddress(), communityId],
+    queryFn: () => client!.getRecordsForCommunity(communityId),
+    enabled: !!client && communityId >= 0,
+    refetchInterval: 60_000,
+    retry: 0,
+  });
+}
+
 type ProgressInput = { onProgress?: (progress: TransactionProgress) => void };
 
 export function useModWrites() {
   const client = useModClient();
   const invalidate = useInvalidate();
-  const wrap = <T extends unknown[]>(fn: (c: ModAppealClient, ...args: T) => Promise<unknown>) =>
+  const useWrap = <T extends unknown[]>(fn: (c: ModAppealClient, ...args: T) => Promise<unknown>) =>
     useMutation({
       mutationFn: async (vars: T) => {
         if (!client) throw new Error("Contract not configured");
@@ -153,11 +165,11 @@ export function useModWrites() {
     });
 
   return {
-    createCommunity: wrap(
+    createCommunity: useWrap(
       (c, name: string, policy: string, onProgress?: (p: TransactionProgress) => void) =>
         c.createCommunity(name, policy, onProgress)
     ),
-    setModerator: wrap(
+    setModerator: useWrap(
       (
         c,
         communityId: number,
@@ -166,7 +178,7 @@ export function useModWrites() {
         onProgress?: (p: TransactionProgress) => void
       ) => c.setModerator(communityId, moderator, authorized, onProgress)
     ),
-    updatePolicy: wrap(
+    updatePolicy: useWrap(
       (
         c,
         communityId: number,
@@ -175,7 +187,7 @@ export function useModWrites() {
         onProgress?: (p: TransactionProgress) => void
       ) => c.updatePolicy(communityId, policy, reason, onProgress)
     ),
-    setActive: wrap(
+    setActive: useWrap(
       (
         c,
         communityId: number,
@@ -183,13 +195,44 @@ export function useModWrites() {
         onProgress?: (p: TransactionProgress) => void
       ) => c.setCommunityActive(communityId, active, onProgress)
     ),
-    accept: wrap((c, communityId: number, onProgress?: (p: TransactionProgress) => void) =>
+    setSigningKey: useWrap(
+      (
+        c,
+        communityId: number,
+        signingKey: string,
+        onProgress?: (p: TransactionProgress) => void
+      ) => c.setSigningKey(communityId, signingKey, onProgress)
+    ),
+    seal: useWrap(
+      (
+        c,
+        communityId: number,
+        target: string,
+        title: string,
+        facts: string,
+        violation: string,
+        level: number,
+        details: string,
+        onProgress?: (p: TransactionProgress) => void
+      ) =>
+        c.sealModerationRecord(
+          communityId,
+          target,
+          title,
+          facts,
+          violation,
+          level,
+          details,
+          onProgress
+        )
+    ),
+    accept: useWrap((c, communityId: number, onProgress?: (p: TransactionProgress) => void) =>
       c.acceptCommunityPolicy(communityId, onProgress)
     ),
-    leave: wrap((c, communityId: number, onProgress?: (p: TransactionProgress) => void) =>
+    leave: useWrap((c, communityId: number, onProgress?: (p: TransactionProgress) => void) =>
       c.leaveCommunity(communityId, onProgress)
     ),
-    publish: wrap(
+    publish: useWrap(
       (
         c,
         communityId: number,
@@ -200,6 +243,7 @@ export function useModWrites() {
         level: number,
         details: string,
         window: number,
+        recordId: number,
         stake: bigint,
         onProgress?: (p: TransactionProgress) => void
       ) =>
@@ -212,15 +256,16 @@ export function useModWrites() {
           level,
           details,
           window,
+          recordId,
           stake,
           onProgress
         )
     ),
-    withdraw: wrap(
+    withdraw: useWrap(
       (c, caseId: number, reason: string, onProgress?: (p: TransactionProgress) => void) =>
         c.withdrawCase(caseId, reason, onProgress)
     ),
-    file: wrap(
+    file: useWrap(
       (
         c,
         caseId: number,
@@ -231,20 +276,20 @@ export function useModWrites() {
         onProgress?: (p: TransactionProgress) => void
       ) => c.fileAppeal(caseId, reason, evidence, requested, stake, onProgress)
     ),
-    respond: wrap(
+    respond: useWrap(
       (c, appealId: number, response: string, onProgress?: (p: TransactionProgress) => void) =>
         c.respondToAppeal(appealId, response, onProgress)
     ),
-    cancel: wrap((c, appealId: number, onProgress?: (p: TransactionProgress) => void) =>
+    cancel: useWrap((c, appealId: number, onProgress?: (p: TransactionProgress) => void) =>
       c.cancelAppeal(appealId, onProgress)
     ),
-    judge: wrap((c, appealId: number, onProgress?: (p: TransactionProgress) => void) =>
+    judge: useWrap((c, appealId: number, onProgress?: (p: TransactionProgress) => void) =>
       c.judgeAppeal(appealId, onProgress)
     ),
-    expire: wrap((c, appealId: number, onProgress?: (p: TransactionProgress) => void) =>
+    expire: useWrap((c, appealId: number, onProgress?: (p: TransactionProgress) => void) =>
       c.expireAppeal(appealId, onProgress)
     ),
-    close: wrap((c, caseId: number, onProgress?: (p: TransactionProgress) => void) =>
+    close: useWrap((c, caseId: number, onProgress?: (p: TransactionProgress) => void) =>
       c.closeCase(caseId, onProgress)
     ),
   };
